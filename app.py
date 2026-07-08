@@ -31,24 +31,33 @@ def fetch_page(url: str) -> str:
         return resp.read().decode("utf-8")
 
 
-def normalize_sns(platform: str, value: str) -> str:
+def build_sns(platform: str, value: str) -> tuple[str, str]:
+    """(handle, full_url) を返す。値がなければ ("", "") を返す。"""
     if not value:
-        return ""
+        return "", ""
     value = value.strip()
     if not value:
-        return ""
+        return "", ""
+
+    # すでに完全URL → ハンドルを逆算
     if value.startswith("http://") or value.startswith("https://"):
-        return value.split("?")[0].rstrip("/")
+        clean_url = value.split("?")[0].rstrip("/")
+        parts = clean_url.rstrip("/").split("/")
+        handle = parts[-1].lstrip("@") if parts else ""
+        return handle, clean_url
+
     handle = value.lstrip("@")
     if platform == "twitter":
-        return f"https://x.com/{handle}"
+        return handle, f"https://x.com/{handle}"
     elif platform == "instagram":
-        return f"https://www.instagram.com/{handle}"
+        return handle, f"https://www.instagram.com/{handle}"
     elif platform == "tiktok":
-        return f"https://www.tiktok.com/@{handle}"
+        return handle, f"https://www.tiktok.com/@{handle}"
     elif platform == "showroom":
-        return f"https://www.showroom-live.com/r/{handle}" if handle else ""
-    return value
+        if handle:
+            return handle, f"https://www.showroom-live.com/r/{handle}"
+        return "", ""
+    return handle, value
 
 
 # ── frecam.jp parser ────────────────────────────────────────────────────────
@@ -81,6 +90,10 @@ def parse_frecam(html: str):
     for m in pattern.finditer(html):
         d = m.groupdict()
         stage_name = STAGE_MAP.get(d.get("stage", ""), f"審査{d.get('stage','')}")
+        x_id, x_url       = build_sns("twitter",   d.get("twitter", ""))
+        ig_id, ig_url     = build_sns("instagram", d.get("instagram", ""))
+        tt_id, tt_url     = build_sns("tiktok",    d.get("tiktok", ""))
+        sr_id, sr_url     = build_sns("showroom",  d.get("showroom", ""))
         entries.append({
             "順位/スコア": "",
             "名前": d.get("name", ""),
@@ -89,17 +102,21 @@ def parse_frecam(html: str):
             "出身": d.get("hometown", ""),
             "グループ": d.get("block", ""),
             "審査": stage_name,
-            "X(Twitter)": normalize_sns("twitter", d.get("twitter", "")),
-            "Instagram": normalize_sns("instagram", d.get("instagram", "")),
-            "TikTok": normalize_sns("tiktok", d.get("tiktok", "")),
-            "SHOWROOM": normalize_sns("showroom", d.get("showroom", "")),
+            "X ID": x_id,
+            "X URL": x_url,
+            "Instagram ID": ig_id,
+            "Instagram URL": ig_url,
+            "TikTok ID": tt_id,
+            "TikTok URL": tt_url,
+            "SHOWROOM ID": sr_id,
+            "SHOWROOM URL": sr_url,
         })
     return entries, page_title
 
 
 # ── mixch.tv parser ──────────────────────────────────────────────────────────
 
-def _extract_handle_from_bio(bio: str, patterns: list[str]) -> str:
+def _extract_handle_from_bio(bio: str, patterns: list) -> str:
     for p in patterns:
         m = re.search(p, bio, re.IGNORECASE)
         if m:
@@ -114,7 +131,6 @@ def parse_mixch(html: str):
     page_title = title_match.group(1).strip() if title_match else "不明"
     page_title = re.sub(r"\s*-\s*ミクチャ.*", "", page_title)
 
-    # Decode Next.js data chunk
     raw_chunks = re.findall(
         r'self\.__next_f\.push\(\[1,"((?:[^"\\]|\\.)*)"\]\)', html, re.DOTALL
     )
@@ -131,7 +147,6 @@ def parse_mixch(html: str):
         r'"id":(\d+),"name":"([^"]+)".*?"bio":"((?:[^"\\]|\\.)*)".*?"instagram":"([^"]*)".*?"score":(\d+)',
         re.DOTALL,
     )
-
     x_patterns = [
         r'x\.com/([\w._]+)',
         r'twitter\.com/([\w._]+)',
@@ -149,8 +164,12 @@ def parse_mixch(html: str):
         uid, name, bio, ig, score = m.groups()
         bio_clean = bio.replace('\\n', '\n')
 
-        x_handle = _extract_handle_from_bio(bio_clean, x_patterns)
+        x_handle  = _extract_handle_from_bio(bio_clean, x_patterns)
         tt_handle = _extract_handle_from_bio(bio_clean, tt_patterns)
+
+        x_id,  x_url  = build_sns("twitter",   x_handle)
+        ig_id, ig_url = build_sns("instagram", ig)
+        tt_id, tt_url = build_sns("tiktok",    tt_handle)
 
         entries.append({
             "順位/スコア": f"{rank}位 ({int(score):,}pt)",
@@ -160,10 +179,14 @@ def parse_mixch(html: str):
             "出身": "",
             "グループ": "",
             "審査": page_title,
-            "X(Twitter)": normalize_sns("twitter", x_handle),
-            "Instagram": normalize_sns("instagram", ig),
-            "TikTok": normalize_sns("tiktok", tt_handle),
-            "SHOWROOM": "",
+            "X ID": x_id,
+            "X URL": x_url,
+            "Instagram ID": ig_id,
+            "Instagram URL": ig_url,
+            "TikTok ID": tt_id,
+            "TikTok URL": tt_url,
+            "SHOWROOM ID": "",
+            "SHOWROOM URL": "",
         })
         rank += 1
 
@@ -178,7 +201,6 @@ def parse_entries(url: str, html: str):
     elif "frecam.jp" in url:
         return parse_frecam(html)
     else:
-        # frecamフォーマットを先に試し、ダメならmixchを試す
         entries, title = parse_frecam(html)
         if entries:
             return entries, title
@@ -187,8 +209,11 @@ def parse_entries(url: str, html: str):
 
 def to_csv_bytes(entries):
     fieldnames = [
-        "順位/スコア", "名前", "名前(かな)", "大学", "出身",
-        "グループ", "審査", "X(Twitter)", "Instagram", "TikTok", "SHOWROOM",
+        "順位/スコア", "名前", "名前(かな)", "大学", "出身", "グループ", "審査",
+        "X ID", "X URL",
+        "Instagram ID", "Instagram URL",
+        "TikTok ID", "TikTok URL",
+        "SHOWROOM ID", "SHOWROOM URL",
     ]
     buf = io.StringIO()
     writer = csv.DictWriter(buf, fieldnames=fieldnames)
@@ -219,7 +244,6 @@ if st.button("取得する", type="primary", disabled=not url):
             else:
                 st.success(f"**{page_title}** から **{len(entries)} 件** 取得しました")
 
-                # グループ別集計（frecam のみ）
                 blocks = Counter(e["グループ"] for e in entries if e["グループ"])
                 if blocks:
                     cols = st.columns(len(blocks))
@@ -232,29 +256,45 @@ if st.button("取得する", type="primary", disabled=not url):
 
                 df = pd.DataFrame(entries)
 
-                def make_link(val):
-                    return f'<a href="{val}" target="_blank">{val}</a>' if val else ""
+                # 表示用: ID列をリンク付きに、URL列は非表示
+                display_cols = [
+                    "順位/スコア", "名前", "名前(かな)", "大学", "出身", "グループ", "審査",
+                    "X ID", "Instagram ID", "TikTok ID", "SHOWROOM ID",
+                ]
+                display_df = df[display_cols].copy()
 
-                display_df = df.copy()
-                for col in ["X(Twitter)", "Instagram", "TikTok", "SHOWROOM"]:
-                    display_df[col] = display_df[col].apply(make_link)
+                sns_map = {
+                    "X ID": "X URL",
+                    "Instagram ID": "Instagram URL",
+                    "TikTok ID": "TikTok URL",
+                    "SHOWROOM ID": "SHOWROOM URL",
+                }
+
+                for id_col, url_col in sns_map.items():
+                    def make_link(row, ic=id_col, uc=url_col):
+                        handle = row[ic]
+                        link   = df.loc[row.name, uc]
+                        if handle and link:
+                            return f'<a href="{link}" target="_blank">@{handle}</a>'
+                        return ""
+                    display_df[id_col] = df.apply(make_link, axis=1)
 
                 st.write(display_df.to_html(escape=False, index=False), unsafe_allow_html=True)
 
                 if "mixch.tv" in url:
-                    st.caption("※ X(Twitter)・TikTok はプロフィール文章から自動抽出しているため、未記載の場合は空欄になります")
+                    st.caption("※ X・TikTok はプロフィール文章から自動抽出のため、未記載の場合は空欄になります")
 
                 st.divider()
 
                 csv_bytes = to_csv_bytes(entries)
                 filename = re.sub(r"[^\w]", "_", page_title) + ".csv"
                 st.download_button(
-                    label="CSVダウンロード",
+                    label="CSVダウンロード（ID・URL両列）",
                     data=csv_bytes,
                     file_name=filename,
                     mime="text/csv",
                 )
-                st.caption("ダウンロードしたCSVはGoogleスプレッドシートにそのままインポートできます")
+                st.caption("CSVには各SNSのID列とURL列が両方含まれます")
 
         except urllib.error.HTTPError as e:
             st.error(f"HTTP エラー {e.code}: ページが見つかりません。URLを確認してください。")
