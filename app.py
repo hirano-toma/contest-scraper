@@ -164,12 +164,7 @@ def parse_mixch(html: str):
         uid, name, bio, ig, score = m.groups()
         bio_clean = bio.replace('\\n', '\n')
 
-        x_handle  = _extract_handle_from_bio(bio_clean, x_patterns)
-        tt_handle = _extract_handle_from_bio(bio_clean, tt_patterns)
-
-        x_id,  x_url  = build_sns("twitter",   x_handle)
         ig_id, ig_url = build_sns("instagram", ig)
-        tt_id, tt_url = build_sns("tiktok",    tt_handle)
 
         entries.append({
             "順位/スコア": f"{rank}位 ({int(score):,}pt)",
@@ -179,12 +174,12 @@ def parse_mixch(html: str):
             "出身": "",
             "グループ": "",
             "審査": page_title,
-            "X ID": x_id,
-            "X URL": x_url,
+            "X ID": "",
+            "X URL": "",
             "Instagram ID": ig_id,
             "Instagram URL": ig_url,
-            "TikTok ID": tt_id,
-            "TikTok URL": tt_url,
+            "TikTok ID": "",
+            "TikTok URL": "",
             "SHOWROOM ID": "",
             "SHOWROOM URL": "",
         })
@@ -282,7 +277,7 @@ if st.button("取得する", type="primary", disabled=not url):
                 st.write(display_df.to_html(escape=False, index=False), unsafe_allow_html=True)
 
                 if "mixch.tv" in url:
-                    st.caption("※ X・TikTok はプロフィール文章から自動抽出のため、未記載の場合は空欄になります")
+                    st.caption("※ mixch.tv は Instagram のみ取得可能です。X・TikTok は構造化データがないため取得していません")
 
                 st.divider()
 
