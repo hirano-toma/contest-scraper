@@ -2,6 +2,7 @@ import streamlit as st
 import re
 import csv
 import io
+import time
 import html as html_module
 import urllib.request
 import urllib.error
@@ -126,7 +127,29 @@ def _extract_handle_from_bio(bio: str, patterns: list) -> str:
     return ""
 
 
-def parse_mixch(html: str):
+def decode_mixch_chunk(chunk: str) -> str:
+    return chunk.replace('\\"', '"').replace('\\\\n', '\n').replace('\\n', '\n')
+
+
+def fetch_profile_sns(user_id: str) -> dict:
+    """プロフィールページから twitter / instagram / youtube を取得する"""
+    html = fetch_page(f"https://mixch.tv/u/{user_id}")
+    chunks = re.findall(
+        r'self\.__next_f\.push\(\[1,"((?:[^"\\]|\\.)*)"\]\)', html, re.DOTALL
+    )
+    for chunk in chunks:
+        if '"twitter"' in chunk or "twitter" in chunk:
+            decoded = decode_mixch_chunk(chunk)
+            result = {}
+            for key in ["twitter", "instagram", "youtube"]:
+                m = re.search(f'"{key}":"([^"]*)"', decoded)
+                result[key] = m.group(1).strip() if m else ""
+            if any(result.values()):
+                return result
+    return {"twitter": "", "instagram": "", "youtube": ""}
+
+
+def parse_mixch(html: str, progress_callback=None):
     title_match = re.search(r"<title>([^<]+)</title>", html)
     page_title = title_match.group(1).strip() if title_match else "不明"
     page_title = re.sub(r"\s*-\s*ミクチャ.*", "", page_title)
@@ -137,34 +160,34 @@ def parse_mixch(html: str):
     decoded = ""
     for chunk in raw_chunks:
         if "instagram" in chunk and "bio" in chunk:
-            decoded = chunk.replace('\\"', '"').replace('\\\\n', '\n').replace('\\n', '\n')
+            decoded = decode_mixch_chunk(chunk)
             break
 
     if not decoded:
         return [], page_title
 
     user_pattern = re.compile(
-        r'"id":(\d+),"name":"([^"]+)".*?"bio":"((?:[^"\\]|\\.)*)".*?"instagram":"([^"]*)".*?"score":(\d+)',
+        r'"id":(\d+),"name":"([^"]+)".*?"score":(\d+)',
         re.DOTALL,
     )
-    x_patterns = [
-        r'x\.com/([a-zA-Z0-9._]+)',
-        r'twitter\.com/([a-zA-Z0-9._]+)',
-        r'[Xx]\s*[→:：]\s*@?([a-zA-Z0-9._]+)',
-        r'[Tt]witter\s*[→:：]\s*@?([a-zA-Z0-9._]+)',
-    ]
-    tt_patterns = [
-        r'tiktok\.com/@?([a-zA-Z0-9._]+)',
-        r'[Tt]ik[Tt]ok\s*[→:：]\s*@?([a-zA-Z0-9._]+)',
-    ]
+    users = user_pattern.findall(decoded)
 
     entries = []
-    rank = 1
-    for m in user_pattern.finditer(decoded):
-        uid, name, bio, ig, score = m.groups()
-        bio_clean = bio.replace('\\n', '\n')
+    for rank, (uid, name, score) in enumerate(users, 1):
+        if progress_callback:
+            progress_callback(rank, len(users), name)
 
-        ig_id, ig_url = build_sns("instagram", ig)
+        try:
+            sns = fetch_profile_sns(uid)
+            time.sleep(0.7)
+        except Exception:
+            sns = {"twitter": "", "instagram": "", "youtube": ""}
+
+        x_id,  x_url  = build_sns("twitter",   sns.get("twitter", ""))
+        ig_id, ig_url = build_sns("instagram", sns.get("instagram", ""))
+        yt_handle = sns.get("youtube", "").strip()
+        yt_url = yt_handle if yt_handle.startswith("http") else (f"https://www.youtube.com/{yt_handle}" if yt_handle else "")
+        yt_id  = yt_handle if not yt_handle.startswith("http") else yt_handle.rstrip("/").split("/")[-1]
 
         entries.append({
             "順位/スコア": f"{rank}位 ({int(score):,}pt)",
@@ -174,16 +197,15 @@ def parse_mixch(html: str):
             "出身": "",
             "グループ": "",
             "審査": page_title,
-            "X ID": "",
-            "X URL": "",
+            "X ID": x_id,
+            "X URL": x_url,
             "Instagram ID": ig_id,
             "Instagram URL": ig_url,
             "TikTok ID": "",
             "TikTok URL": "",
-            "SHOWROOM ID": "",
-            "SHOWROOM URL": "",
+            "SHOWROOM ID": yt_id,
+            "SHOWROOM URL": yt_url,
         })
-        rank += 1
 
     return entries, page_title
 
@@ -229,71 +251,85 @@ url = st.text_input(
 )
 
 if st.button("取得する", type="primary", disabled=not url):
-    with st.spinner("データを取得中..."):
-        try:
+    try:
+        is_mixch = "mixch.tv" in url
+
+        with st.spinner("イベントページを取得中..."):
             html = fetch_page(url)
-            entries, page_title = parse_entries(url, html)
 
-            if not entries:
-                st.error("エントリーデータが見つかりませんでした。URLを確認してください。")
-            else:
-                st.success(f"**{page_title}** から **{len(entries)} 件** 取得しました")
+        if is_mixch:
+            st.info("各プロフィールページを順番に取得します（人数によっては1分程度かかります）")
+            progress_bar = st.progress(0)
+            status_text = st.empty()
 
-                blocks = Counter(e["グループ"] for e in entries if e["グループ"])
-                if blocks:
-                    cols = st.columns(len(blocks))
-                    for col, (block, count) in zip(cols, sorted(blocks.items())):
-                        col.metric(f"グループ {block}", f"{count} 人")
+            def on_progress(current, total, name):
+                progress_bar.progress(current / total)
+                status_text.text(f"取得中 {current}/{total}：{name}")
 
-                st.divider()
+            entries, page_title = parse_mixch(html, progress_callback=on_progress)
+            progress_bar.empty()
+            status_text.empty()
+        else:
+            with st.spinner("データを解析中..."):
+                entries, page_title = parse_entries(url, html)
 
-                import pandas as pd
+        if not entries:
+            st.error("エントリーデータが見つかりませんでした。URLを確認してください。")
+        else:
+            st.success(f"**{page_title}** から **{len(entries)} 件** 取得しました")
 
-                df = pd.DataFrame(entries)
+            blocks = Counter(e["グループ"] for e in entries if e["グループ"])
+            if blocks:
+                cols = st.columns(len(blocks))
+                for col, (block, count) in zip(cols, sorted(blocks.items())):
+                    col.metric(f"グループ {block}", f"{count} 人")
 
-                # 表示用: ID列をリンク付きに、URL列は非表示
-                display_cols = [
-                    "順位/スコア", "名前", "名前(かな)", "大学", "出身", "グループ", "審査",
-                    "X ID", "Instagram ID", "TikTok ID", "SHOWROOM ID",
-                ]
-                display_df = df[display_cols].copy()
+            st.divider()
 
-                sns_map = {
-                    "X ID": "X URL",
-                    "Instagram ID": "Instagram URL",
-                    "TikTok ID": "TikTok URL",
-                    "SHOWROOM ID": "SHOWROOM URL",
-                }
+            import pandas as pd
+            df = pd.DataFrame(entries)
 
-                for id_col, url_col in sns_map.items():
-                    def make_link(row, ic=id_col, uc=url_col):
-                        handle = row[ic]
-                        link   = df.loc[row.name, uc]
-                        if handle and link:
-                            return f'<a href="{link}" target="_blank">@{handle}</a>'
-                        return ""
-                    display_df[id_col] = df.apply(make_link, axis=1)
+            display_cols = [
+                "順位/スコア", "名前", "名前(かな)", "大学", "出身", "グループ", "審査",
+                "X ID", "Instagram ID", "TikTok ID", "SHOWROOM ID",
+            ]
+            display_df = df[display_cols].copy()
 
-                st.write(display_df.to_html(escape=False, index=False), unsafe_allow_html=True)
+            sns_map = {
+                "X ID": "X URL",
+                "Instagram ID": "Instagram URL",
+                "TikTok ID": "TikTok URL",
+                "SHOWROOM ID": "SHOWROOM URL",
+            }
+            for id_col, url_col in sns_map.items():
+                def make_link(row, ic=id_col, uc=url_col):
+                    handle = row[ic]
+                    link = df.loc[row.name, uc]
+                    if handle and link:
+                        return f'<a href="{link}" target="_blank">@{handle}</a>'
+                    return ""
+                display_df[id_col] = df.apply(make_link, axis=1)
 
-                if "mixch.tv" in url:
-                    st.caption("※ mixch.tv は Instagram のみ取得可能です。X・TikTok は構造化データがないため取得していません")
+            st.write(display_df.to_html(escape=False, index=False), unsafe_allow_html=True)
 
-                st.divider()
+            if is_mixch:
+                st.caption("※ TikTok は mixch.tv に登録フィールドがないため取得していません")
 
-                csv_bytes = to_csv_bytes(entries)
-                filename = re.sub(r"[^\w]", "_", page_title) + ".csv"
-                st.download_button(
-                    label="CSVダウンロード（ID・URL両列）",
-                    data=csv_bytes,
-                    file_name=filename,
-                    mime="text/csv",
-                )
-                st.caption("CSVには各SNSのID列とURL列が両方含まれます")
+            st.divider()
 
-        except urllib.error.HTTPError as e:
-            st.error(f"HTTP エラー {e.code}: ページが見つかりません。URLを確認してください。")
-        except urllib.error.URLError as e:
-            st.error(f"接続エラー: {e.reason}")
-        except Exception as e:
-            st.error(f"エラーが発生しました: {e}")
+            csv_bytes = to_csv_bytes(entries)
+            filename = re.sub(r"[^\w]", "_", page_title) + ".csv"
+            st.download_button(
+                label="CSVダウンロード（ID・URL両列）",
+                data=csv_bytes,
+                file_name=filename,
+                mime="text/csv",
+            )
+            st.caption("CSVには各SNSのID列とURL列が両方含まれます")
+
+    except urllib.error.HTTPError as e:
+        st.error(f"HTTP エラー {e.code}: ページが見つかりません。URLを確認してください。")
+    except urllib.error.URLError as e:
+        st.error(f"接続エラー: {e.reason}")
+    except Exception as e:
+        st.error(f"エラーが発生しました: {e}")
