@@ -22,7 +22,7 @@ STAGE_MAP = {
     "7": "ファイナル", "8": "グランプリ",
 }
 
-HANDLE_RE = re.compile(r'^[\w._]{2,40}$')
+HANDLE_RE = re.compile(r'^[a-zA-Z0-9._]{2,40}$')
 
 
 def fetch_page(url: str) -> str:
@@ -148,14 +148,14 @@ def parse_mixch(html: str):
         re.DOTALL,
     )
     x_patterns = [
-        r'x\.com/([\w._]+)',
-        r'twitter\.com/([\w._]+)',
-        r'[Xx]\s*[→:：]\s*@?([\w._]+)',
-        r'[Tt]witter\s*[→:：]\s*@?([\w._]+)',
+        r'x\.com/([a-zA-Z0-9._]+)',
+        r'twitter\.com/([a-zA-Z0-9._]+)',
+        r'[Xx]\s*[→:：]\s*@?([a-zA-Z0-9._]+)',
+        r'[Tt]witter\s*[→:：]\s*@?([a-zA-Z0-9._]+)',
     ]
     tt_patterns = [
-        r'tiktok\.com/@?([\w._]+)',
-        r'[Tt]ik[Tt]ok\s*[→:：]\s*@?([\w._]+)',
+        r'tiktok\.com/@?([a-zA-Z0-9._]+)',
+        r'[Tt]ik[Tt]ok\s*[→:：]\s*@?([a-zA-Z0-9._]+)',
     ]
 
     entries = []
