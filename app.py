@@ -210,6 +210,75 @@ def parse_mixch(html: str, progress_callback=None):
     return entries, page_title
 
 
+# ── miscolle.com parser ──────────────────────────────────────────────────────
+
+def parse_miscolle(url: str, html: str, progress_callback=None):
+    # コンテスト名をタイトルから取得
+    title_m = re.search(r'<title>\s*([^|<]+)', html)
+    page_title = title_m.group(1).strip() if title_m else "不明"
+
+    # プロフィールリンク一覧を取得
+    base = re.match(r'(https?://[^/]+)', url).group(1)
+    path_base = re.match(r'(https?://[^/]+/[^/]+)', url).group(1)
+    profile_paths = list(dict.fromkeys(
+        re.findall(r'href="(/[^"]+/profile/[^"]+)"', html)
+    ))
+
+    if not profile_paths:
+        return [], page_title
+
+    entries = []
+    for i, path in enumerate(profile_paths, 1):
+        if progress_callback:
+            progress_callback(i, len(profile_paths), path)
+
+        try:
+            profile_html = fetch_page(f"{base}{path}")
+            time.sleep(0.5)
+        except Exception:
+            continue
+
+        # 名前
+        name_m = re.search(r'<h1[^>]*>\s*([^<]+)\s*</h1>', profile_html)
+        name = name_m.group(1).strip() if name_m else path.split("/")[-1]
+
+        # SNSリンク（重複除去・先頭優先）
+        all_links = re.findall(r'href="(https?://[^"]+)"', profile_html)
+        x, ig, tt, yt = "", "", "", ""
+        for l in all_links:
+            if ("x.com/" in l or "twitter.com/" in l) and not x:
+                x = l
+            elif "instagram.com/" in l and not ig:
+                ig = l
+            elif "tiktok.com/" in l and not tt:
+                tt = l.replace("@@", "@")
+            elif "youtube.com/" in l and not yt:
+                yt = l
+
+        def url_to_id(u):
+            return u.rstrip("/").split("/")[-1].lstrip("@") if u else ""
+
+        entries.append({
+            "順位/スコア": f"No.{i}",
+            "名前": name,
+            "名前(かな)": "",
+            "大学": "",
+            "出身": "",
+            "グループ": "",
+            "審査": page_title,
+            "X ID": url_to_id(x),
+            "X URL": x,
+            "Instagram ID": url_to_id(ig),
+            "Instagram URL": ig,
+            "TikTok ID": url_to_id(tt),
+            "TikTok URL": tt,
+            "SHOWROOM ID": url_to_id(yt),
+            "SHOWROOM URL": yt,
+        })
+
+    return entries, page_title
+
+
 # ── サイト判別 ───────────────────────────────────────────────────────────────
 
 def parse_entries(url: str, html: str):
@@ -217,6 +286,8 @@ def parse_entries(url: str, html: str):
         return parse_mixch(html)
     elif "frecam.jp" in url:
         return parse_frecam(html)
+    elif "miscolle.com" in url:
+        return None, None  # miscolleはUI側でprogress_callbackを渡す
     else:
         entries, title = parse_frecam(html)
         if entries:
@@ -243,7 +314,7 @@ def to_csv_bytes(entries):
 
 st.set_page_config(page_title="コンテストリスト抽出", page_icon="🏆", layout="wide")
 st.title("🏆 コンテストリスト抽出")
-st.caption("対応サイト: frecam.jp / mixch.tv")
+st.caption("対応サイト: frecam.jp / mixch.tv / miscolle.com")
 
 url = st.text_input(
     "サイトのURLを入力",
@@ -257,7 +328,9 @@ if st.button("取得する", type="primary", disabled=not url):
         with st.spinner("イベントページを取得中..."):
             html = fetch_page(url)
 
-        if is_mixch:
+        is_miscolle = "miscolle.com" in url
+
+        if is_mixch or is_miscolle:
             st.info("各プロフィールページを順番に取得します（人数によっては1分程度かかります）")
             progress_bar = st.progress(0)
             status_text = st.empty()
@@ -266,7 +339,11 @@ if st.button("取得する", type="primary", disabled=not url):
                 progress_bar.progress(current / total)
                 status_text.text(f"取得中 {current}/{total}：{name}")
 
-            entries, page_title = parse_mixch(html, progress_callback=on_progress)
+            if is_mixch:
+                entries, page_title = parse_mixch(html, progress_callback=on_progress)
+            else:
+                entries, page_title = parse_miscolle(url, html, progress_callback=on_progress)
+
             progress_bar.empty()
             status_text.empty()
         else:
